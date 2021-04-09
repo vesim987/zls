@@ -18,6 +18,8 @@ const known_folders = @import("known-folders");
 
 const logger = std.log.scoped(.main);
 
+pub const os = @import("os.zig");
+
 // Always set this to debug to make std.log call into our handler, then control the runtime
 // value in the definition below.
 pub const log_level = .debug;
@@ -1644,10 +1646,11 @@ fn processJsonRpc(arena: *std.heap.ArenaAllocator, parser: *std.json.Parser, jso
         .{ "textDocument/declaration", requests.GotoDeclaration, gotoDeclarationHandler },
         .{ "textDocument/hover", requests.Hover, hoverHandler },
         .{ "textDocument/documentSymbol", requests.DocumentSymbols, documentSymbolsHandler },
-        .{ "textDocument/formatting", requests.Formatting, formattingHandler },
         .{ "textDocument/rename", requests.Rename, renameHandler },
         .{ "textDocument/references", requests.References, referencesHandler },
-    };
+    } ++ if (std.builtin.os.tag != .freestanding) .{
+        .{ "textDocument/formatting", requests.Formatting, formattingHandler },
+    } else .{};
 
     // Hack to avoid `return`ing in the inline for, which causes bugs.
     var done: ?anyerror = null;
@@ -1710,40 +1713,7 @@ const stack_frames = switch (std.builtin.mode) {
 };
 var gpa_state = std.heap.GeneralPurposeAllocator(.{ .stack_trace_frames = stack_frames }){};
 
-pub fn main() anyerror!void {
-    defer _ = gpa_state.deinit();
-    defer keep_running = false;
-    allocator = &gpa_state.allocator;
-
-    analysis.init(allocator);
-    defer analysis.deinit();
-
-    // Check arguments.
-    var args_it = std.process.args();
-    defer args_it.deinit();
-    const prog_name = try args_it.next(allocator) orelse @panic("Could not find self argument");
-    allocator.free(prog_name);
-
-    while (args_it.next(allocator)) |maybe_arg| {
-        const arg = try maybe_arg;
-        defer allocator.free(arg);
-        if (std.mem.eql(u8, arg, "--debug-log")) {
-            actual_log_level = .debug;
-            std.debug.print("Enabled debug logging\n", .{});
-        } else if (std.mem.eql(u8, arg, "config")) {
-            try setup.wizard(allocator);
-            return;
-        } else {
-            std.debug.print("Unrecognized argument {s}\n", .{arg});
-            std.os.exit(1);
-        }
-    }
-
-    // Init global vars
-    const reader = std.io.getStdIn().reader();
-    stdout = std.io.bufferedWriter(std.io.getStdOut().writer());
-
-    // Read the configuration, if any.
+fn load_config(allocator: *std.mem.Allocator) !Config {
     const config_parse_options = std.json.ParseOptions{ .allocator = allocator };
     var config = Config{};
     defer std.json.parseFree(Config, config, config_parse_options);
@@ -1830,6 +1800,49 @@ pub fn main() anyerror!void {
     if (config.zig_lib_path == null) {
         logger.warn("Zig standard library path not specified in zls.json and could not be resolved from the zig executable", .{});
     }
+
+    return config;
+}
+
+pub fn main() anyerror!void {
+    defer _ = gpa_state.deinit();
+    defer keep_running = false;
+    allocator = &gpa_state.allocator;
+
+    analysis.init(allocator);
+    defer analysis.deinit();
+
+    if (std.builtin.os.tag != .freestanding) {
+        // Check arguments.
+        var args_it = std.process.args();
+        defer args_it.deinit();
+        const prog_name = try args_it.next(allocator) orelse @panic("Could not find self argument");
+        allocator.free(prog_name);
+
+        while (args_it.next(allocator)) |maybe_arg| {
+            const arg = try maybe_arg;
+            defer allocator.free(arg);
+            if (std.mem.eql(u8, arg, "--debug-log")) {
+                actual_log_level = .debug;
+                std.debug.print("Enabled debug logging\n", .{});
+            } else if (std.mem.eql(u8, arg, "config")) {
+                try setup.wizard(allocator);
+                return;
+            } else {
+                std.debug.print("Unrecognized argument {s}\n", .{arg});
+                std.os.exit(1);
+            }
+        }
+    }
+
+    // Init global vars
+    const reader = std.io.getStdIn().reader();
+    stdout = std.io.bufferedWriter(std.io.getStdOut().writer());
+
+    // Read the configuration, if any.
+    const config = if (std.builtin.os.tag == .freestanding) Config{
+        .build_runner_path = "none",
+    } else try load_config();
 
     const build_runner_path = if (config.build_runner_path) |p|
         try allocator.dupe(u8, p)

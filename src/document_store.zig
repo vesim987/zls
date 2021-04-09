@@ -186,15 +186,17 @@ fn newDocument(self: *DocumentStore, uri: []const u8, text: []u8) anyerror!*Hand
 
         // TODO: Do this in a separate thread?
         // It can take quite long.
-        loadPackages(.{
-            .build_file = build_file,
-            .allocator = self.allocator,
-            .build_runner_path = self.build_runner_path,
-            .build_runner_cache_path = self.build_runner_cache_path,
-            .zig_exe_path = self.zig_exe_path.?,
-        }) catch |err| {
-            log.debug("Failed to load packages of build file {s} (error: {})", .{ build_file.uri, err });
-        };
+        if (std.builtin.os.tag != .freestanding) {
+            loadPackages(.{
+                .build_file = build_file,
+                .allocator = self.allocator,
+                .build_runner_path = self.build_runner_path,
+                .build_runner_cache_path = self.build_runner_cache_path,
+                .zig_exe_path = self.zig_exe_path.?,
+            }) catch |err| {
+                log.debug("Failed to load packages of build file {s} (error: {})", .{ build_file.uri, err });
+            };
+        }
     } else if (self.zig_exe_path != null and !in_std) {
         // Look into build files and keep the one that lives closest to the document in the directory structure
         var candidate: ?*BuildFile = null;
@@ -436,16 +438,18 @@ fn refreshDocument(self: *DocumentStore, handle: *Handle) !void {
 }
 
 pub fn applySave(self: *DocumentStore, handle: *Handle) !void {
-    if (handle.is_build_file) |build_file| {
-        loadPackages(.{
-            .build_file = build_file,
-            .allocator = self.allocator,
-            .build_runner_path = self.build_runner_path,
-            .build_runner_cache_path = self.build_runner_cache_path,
-            .zig_exe_path = self.zig_exe_path.?,
-        }) catch |err| {
-            log.debug("Failed to load packages of build file {s} (error: {})", .{ build_file.uri, err });
-        };
+    if (std.builtin.os.tag != .freestanding) {
+        if (handle.is_build_file) |build_file| {
+            loadPackages(.{
+                .build_file = build_file,
+                .allocator = self.allocator,
+                .build_runner_path = self.build_runner_path,
+                .build_runner_cache_path = self.build_runner_cache_path,
+                .zig_exe_path = self.zig_exe_path.?,
+            }) catch |err| {
+                log.debug("Failed to load packages of build file {s} (error: {})", .{ build_file.uri, err });
+            };
+        }
     }
 }
 
@@ -628,7 +632,7 @@ pub fn resolveImport(self: *DocumentStore, handle: *Handle, import_str: []const 
 
 fn stdUriFromLibPath(allocator: *std.mem.Allocator, zig_lib_path: ?[]const u8) !?[]const u8 {
     if (zig_lib_path) |zpath| {
-        const std_path = std.fs.path.resolve(allocator, &[_][]const u8{
+        const std_path = if (std.builtin.os.tag == .freestanding) zig_lib_path.? else std.fs.path.resolve(allocator, &[_][]const u8{
             zpath, "./std/std.zig",
         }) catch |err| {
             log.debug("Failed to resolve zig std library path, error: {}", .{err});
